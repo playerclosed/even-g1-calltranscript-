@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Even G1 Call Transcript (HUD)</title>
+  <style>
+    html,body{height:100%;margin:0;background:transparent;color:#0f0;font-family:system-ui,Helvetica,Arial,sans-serif}
+    header{padding:8px;display:flex;justify-content:space-between;align-items:center;font-size:14px}
+    .controls{display:flex;gap:8px;align-items:center}
+    select,button{background:transparent;border:1px solid rgba(0,255,0,.3);color:#0f0;padding:6px;border-radius:6px}
+    #wrap{display:flex;flex-direction:column;height:calc(100% - 44px)}
+    #transcript{flex:1;padding:12px;display:flex;flex-direction:column;justify-content:flex-end;overflow:auto}
+    .line{font-size:26px;line-height:1.35;margin:2px 0;text-shadow:0 0 6px rgba(0,255,0,.35)}
+    #log{height:84px;overflow:auto;background:rgba(0,0,0,.2);color:#9f9;font:12px/1.4 monospace;padding:6px;border-top:1px solid rgba(0,255,0,.15)}
+  </style>
+</head>
+<body>
+<header>
+  <div>Even G1 Call Transcript</div>
+  <div class="controls">
+    <select id="lang"><option value="de-DE">Deutsch</option><option value="en-US">English</option></select>
+    <select id="mode">
+      <option value="partner">Partner (iPhone-Lautsprecher)</option>
+      <option value="user">User (eigene Stimme)</option>
+      <option value="both">Both (experimentell)</option>
+    </select>
+    <button id="start">Start</button>
+    <button id="stop" disabled>Stop</button>
+  </div>
+</header>
+<div id="wrap">
+  <div id="transcript"><div class="line">— bereit —</div></div>
+  <div id="log"></div>
+</div>
+<script>
+const logEl = document.getElementById('log');
+const transEl = document.getElementById('transcript');
+const startBtn = document.getElementById('start');
+const stopBtn = document.getElementById('stop');
+const langSel = document.getElementById('lang');
+const modeSel = document.getElementById('mode');
+
+let recognition=null, openedStream=null, meterTimer=null;
+
+function lg(m){const t=new Date().toLocaleTimeString(); logEl.textContent=`[${t}] ${m}\n`+logEl.textContent;}
+function addLine(t){const d=document.createElement('div'); d.className='line'; d.textContent=t; transEl.appendChild(d); transEl.scrollTop=transEl.scrollHeight; if(transEl.childElementCount>40) transEl.removeChild(transEl.firstChild);}
+
+async function pickDevice(preferAmbient){
+  try{
+    await navigator.mediaDevices.getUserMedia({audio:true});
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const ins = devs.filter(d=>d.kind==='audioinput');
+    if(ins.length===0) return null;
+    if(preferAmbient){
+      const amb = ins.find(d=>/ambient|secondary|rear|top|umgebung/i.test(d.label));
+      return (amb||ins[0]).deviceId;
+    }else{
+      const prim = ins.find(d=>/primary|main|front|voice/i.test(d.label));
+      return (prim||ins[0]).deviceId;
+    }
+  }catch(e){ lg('Geräteauswahl fehlgeschlagen: '+e.message); return null; }
+}
+
+async function startHUD(){
+  startBtn.disabled=true; stopBtn.disabled=false;
+  const preferAmbient = (modeSel.value==='partner' || modeSel.value==='both');
+  const devId = await pickDevice(preferAmbient);
+  try{
+    openedStream = await navigator.mediaDevices.getUserMedia({audio: devId?{deviceId:{exact:devId}}:true});
+    lg('Mikro geöffnet');
+  }catch(e){ addLine('❌ Mikrofonzugriff fehlgeschlagen: '+e.message); lg('getUserMedia error: '+e.message); return; }
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ addLine('❌ Spracherkennung nicht verfügbar'); return; }
+  recognition = new SR();
+  recognition.lang = langSel.value;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onresult = ev=>{
+    let txt=''; for(let i=ev.resultIndex;i<ev.results.length;i++) txt+=ev.results[i][0].transcript;
+    if(txt.trim()){
+      const who=(modeSel.value==='partner')?'Partner':(modeSel.value==='user')?'Du':'Transkript';
+      addLine(`${who}: ${txt.trim()}`);
+    }
+  };
+  recognition.onerror = e=> lg('STT Fehler: '+JSON.stringify(e));
+  try{ recognition.start(); addLine('▶ Transkript gestartet'); }catch(e){ addLine('❌ STT Start fehlgeschlagen: '+e.message); }
+
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(openedStream);
+    const an = ctx.createAnalyser(); src.connect(an); an.fftSize=256;
+    const buf = new Uint8Array(an.frequencyBinCount);
+    meterTimer = setInterval(()=>{ an.getByteFrequencyData(buf); let s=0; for(let i=0;i<buf.length;i++) s+=buf[i]; lg('Mic-Level: '+Math.round(s/buf.length)); }, 900);
+    openedStream.getTracks()[0].addEventListener('ended',()=>{ clearInterval(meterTimer); try{ctx.close();}catch{} });
+  }catch(e){ lg('LevelMeter Fehler: '+e.message); }
+}
+
+function stopHUD(){
+  stopBtn.disabled=true; startBtn.disabled=false;
+  if(recognition){ try{ recognition.stop(); }catch{} recognition=null; }
+  if(openedStream){ openedStream.getTracks().forEach(t=>t.stop()); openedStream=null; }
+  if(meterTimer){ clearInterval(meterTimer); meterTimer=null; }
+  addLine('■ gestoppt'); lg('Stopped.');
+}
+
+startBtn.onclick=startHUD; stopBtn.onclick=stopHUD;
+</script>
+</body>
+</html>
